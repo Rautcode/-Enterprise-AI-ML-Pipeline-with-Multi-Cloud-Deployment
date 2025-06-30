@@ -18,23 +18,25 @@ This repository contains a complete enterprise-grade AI/ML pipeline implementati
 ```
 ├── terraform/                 # Infrastructure as Code
 │   ├── azure/                # Azure-specific configurations
-│   ├── aws/                  # AWS-specific configurations
-│   └── modules/              # Reusable Terraform modules
+│   └── aws/                  # AWS-specific configurations
 ├── docker/                   # Container configurations
 │   ├── ml-api/              # ML API service
-│   ├── ml-training/         # Training pipeline
-│   └── monitoring/          # Monitoring stack
+│   └── ml-training/         # Training pipeline
 ├── kubernetes/               # K8s manifests
-│   ├── base/                # Base configurations
-│   ├── overlays/            # Environment-specific overlays
-│   └── helm-charts/         # Helm charts
+│   └── base/                # Base configurations
 ├── .github/workflows/        # CI/CD pipelines
 ├── src/                     # Application source code
 │   ├── ml-api/              # ML API service
 │   ├── training/            # Training pipeline
-│   └── common/              # Shared utilities
+│   └── tests/               # Unit tests
 ├── scripts/                 # Deployment and utility scripts
-└── docs/                    # Documentation
+├── docs/                    # Documentation
+├── monitoring/              # Monitoring configurations
+├── nginx/                   # Load balancer configuration
+├── notebooks/               # Jupyter notebooks
+├── data/                    # Data utilities
+├── docker-compose.yml       # Local development stack
+└── Makefile                 # Build automation
 
 ```
 
@@ -53,21 +55,43 @@ This repository contains a complete enterprise-grade AI/ML pipeline implementati
 ### Prerequisites
 
 - Docker Desktop
-- kubectl
-- Terraform >= 1.0
-- Azure CLI
-- AWS CLI
-- Helm >= 3.0
+- Python 3.9+
+- kubectl (for Kubernetes deployment)
+- Terraform >= 1.0 (for infrastructure deployment)
+- Azure CLI (for Azure deployment)
+- AWS CLI (for AWS deployment)
 
-### Setup
+### Local Development
 
-1. Clone the repository
-2. Configure cloud credentials
-3. Initialize Terraform
-4. Deploy infrastructure
-5. Deploy applications
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/Rautcode/-Enterprise-AI-ML-Pipeline-with-Multi-Cloud-Deployment.git
+   cd -Enterprise-AI-ML-Pipeline-with-Multi-Cloud-Deployment
+   ```
 
-See detailed instructions in the [docs/](./docs/) directory.
+2. **Setup development environment**
+   ```bash
+   make dev-setup
+   ```
+
+3. **Run locally**
+   ```bash
+   # Option 1: Run API directly
+   make run-local
+   
+   # Option 2: Run full stack with Docker
+   make docker-dev-full
+   ```
+
+4. **Access services**
+   - ML API: http://localhost:8000
+   - API Documentation: http://localhost:8000/docs
+   - MLflow: http://localhost:5000
+   - Grafana: http://localhost:3000
+
+### Cloud Deployment
+
+See detailed instructions in the [docs/deployment.md](./docs/deployment.md) file.
 
 ## 📊 Key Metrics
 
@@ -78,17 +102,17 @@ See detailed instructions in the [docs/](./docs/) directory.
 
 ## 🔧 Configuration
 
-All configurations are environment-specific and stored in:
-- `terraform/environments/`
-- `kubernetes/overlays/`
-- `.github/workflows/`
+All configurations are managed through:
+- `.env.example` - Environment variables template
+- `docker-compose.yml` - Local development stack
+- `terraform/` - Infrastructure configurations
+- `kubernetes/base/` - Kubernetes manifests
 
 ## 📚 Documentation
 
 - [Architecture Overview](./docs/architecture.md)
 - [Deployment Guide](./docs/deployment.md)
-- [Monitoring Setup](./docs/monitoring.md)
-- [Security Guidelines](./docs/security.md)
+- [Example Usage](./notebooks/example_usage.md)
 
 ## 🤝 Contributing
 
