@@ -1,0 +1,212 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-storage-pvc
+  namespace: ml-pipeline
+  labels:
+    app: ml-pipeline
+    tier: storage
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: fast-ssd
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-storage-pvc
+  namespace: ml-pipeline
+  labels:
+    app: ml-pipeline
+    tier: storage
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: fast-ssd
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: artifacts-storage-pvc
+  namespace: ml-pipeline
+  labels:
+    app: ml-pipeline
+    tier: storage
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 200Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-secret
+  namespace: ml-pipeline
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ewogICJhdXRocyI6IHsKICAgICJyZWdpc3RyeS5leGFtcGxlLmNvbSI6IHsKICAgICAgInVzZXJuYW1lIjogInJlZ2lzdHJ5LXVzZXIiLAogICAgICAicGFzc3dvcmQiOiAicmVnaXN0cnktcGFzc3dvcmQiLAogICAgICAiYXV0aCI6ICJjbVZuYVhOMGNua3RkWE5sY2pwd1lYTnpkMjl5WkE9PSIKICAgIH0KICB9Cn0=
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ml-config
+  namespace: ml-pipeline
+  labels:
+    app: ml-pipeline
+    tier: config
+data:
+  model_config.yaml: |
+    model:
+      name: "production_model"
+      version: "1.0.0"
+      type: "classification"
+      input_features:
+        - feature1
+        - feature2
+        - feature3
+      output_classes:
+        - class1
+        - class2
+        - class3
+    
+    training:
+      batch_size: 32
+      epochs: 100
+      learning_rate: 0.001
+      optimizer: "adam"
+      loss_function: "categorical_crossentropy"
+      metrics:
+        - accuracy
+        - precision
+        - recall
+    
+    deployment:
+      scaling:
+        min_replicas: 3
+        max_replicas: 20
+        target_cpu_utilization: 70
+        target_memory_utilization: 80
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+        limits:
+          cpu: "500m"
+          memory: "1Gi"
+    
+    monitoring:
+      metrics_enabled: true
+      logging_level: "INFO"
+      health_check_endpoint: "/health"
+      metrics_endpoint: "/metrics"
+  
+  logging_config.yaml: |
+    version: 1
+    disable_existing_loggers: false
+    formatters:
+      standard:
+        format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+      json:
+        format: "%(asctime)s %(name)s %(levelname)s %(message)s"
+        class: pythonjsonlogger.jsonlogger.JsonFormatter
+    handlers:
+      console:
+        class: logging.StreamHandler
+        level: INFO
+        formatter: standard
+        stream: ext://sys.stdout
+      file:
+        class: logging.handlers.RotatingFileHandler
+        level: INFO
+        formatter: json
+        filename: /app/logs/ml-pipeline.log
+        maxBytes: 10485760  # 10MB
+        backupCount: 5
+    loggers:
+      "":
+        level: INFO
+        handlers: [console, file]
+        propagate: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-service
+  namespace: ml-pipeline
+  labels:
+    app: mlflow
+    tier: tracking
+spec:
+  selector:
+    app: mlflow
+  ports:
+  - name: http
+    port: 5000
+    targetPort: 5000
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: ml-pipeline
+  labels:
+    app: mlflow
+    tier: tracking
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+        tier: tracking
+    spec:
+      containers:
+      - name: mlflow
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          pip install mlflow boto3 psycopg2-binary &&
+          mlflow server \
+            --backend-store-uri postgresql://mlflow:password@postgres:5432/mlflow \
+            --default-artifact-root s3://ml-artifacts-bucket/mlflow \
+            --host 0.0.0.0 \
+            --port 5000
+        ports:
+        - containerPort: 5000
+          name: http
+        env:
+        - name: MLFLOW_S3_ENDPOINT_URL
+          value: "https://s3.amazonaws.com"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: access_key_id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: secret_access_key
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"

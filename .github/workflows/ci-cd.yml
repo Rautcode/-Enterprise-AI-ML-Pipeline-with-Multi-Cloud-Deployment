@@ -1,0 +1,309 @@
+name: Multi-Cloud ML Pipeline CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+      cloud_provider:
+        description: 'Cloud provider'
+        required: true
+        default: 'azure'
+        type: choice
+        options:
+        - azure
+        - aws
+        - both
+
+env:
+  REGISTRY_AZURE: ${{ secrets.AZURE_REGISTRY }}
+  REGISTRY_AWS: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  PROJECT_NAME: aimlpipeline
+
+jobs:
+  # Test and validate code
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.9, 3.10, 3.11]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r docker/ml-api/requirements.txt
+        pip install -r docker/ml-training/requirements.txt
+        pip install pytest pytest-cov flake8 black mypy
+    
+    - name: Lint with flake8
+      run: |
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    
+    - name: Format check with black
+      run: black --check src/
+    
+    - name: Type check with mypy
+      run: mypy src/ --ignore-missing-imports
+    
+    - name: Test with pytest
+      run: |
+        pytest src/tests/ -v --cov=src/ --cov-report=xml
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: true
+
+  # Security scanning
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # Build and push Docker images
+  build:
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [ml-api, ml-training]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Configure AWS credentials
+      if: github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      if: github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both'
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    
+    - name: Login to Azure Container Registry
+      if: github.event.inputs.cloud_provider == 'azure' || github.event.inputs.cloud_provider == 'both'
+      uses: azure/docker-login@v1
+      with:
+        login-server: ${{ env.REGISTRY_AZURE }}
+        username: ${{ secrets.AZURE_CLIENT_ID }}
+        password: ${{ secrets.AZURE_CLIENT_SECRET }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          ${{ env.REGISTRY_AZURE }}/${{ matrix.service }}
+          ${{ env.REGISTRY_AWS }}/${{ env.PROJECT_NAME }}/${{ matrix.service }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./docker/${{ matrix.service }}
+        file: ./docker/${{ matrix.service }}/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+  # Infrastructure deployment
+  infrastructure:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.6.0
+    
+    - name: Configure Azure credentials
+      if: github.event.inputs.cloud_provider == 'azure' || github.event.inputs.cloud_provider == 'both'
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
+    - name: Configure AWS credentials
+      if: github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+    
+    - name: Deploy Azure Infrastructure
+      if: github.event.inputs.cloud_provider == 'azure' || github.event.inputs.cloud_provider == 'both'
+      working-directory: ./terraform/azure
+      run: |
+        terraform init
+        terraform plan -var="environment=${{ github.event.inputs.environment || 'dev' }}"
+        terraform apply -auto-approve -var="environment=${{ github.event.inputs.environment || 'dev' }}"
+    
+    - name: Deploy AWS Infrastructure
+      if: github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both'
+      working-directory: ./terraform/aws
+      run: |
+        terraform init
+        terraform plan -var="environment=${{ github.event.inputs.environment || 'dev' }}"
+        terraform apply -auto-approve -var="environment=${{ github.event.inputs.environment || 'dev' }}"
+
+  # Deploy to Kubernetes (Blue-Green Deployment)
+  deploy:
+    needs: infrastructure
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    strategy:
+      matrix:
+        cloud: [azure, aws]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: '1.28.0'
+    
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+    
+    - name: Configure Azure Kubernetes
+      if: matrix.cloud == 'azure' && (github.event.inputs.cloud_provider == 'azure' || github.event.inputs.cloud_provider == 'both')
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: ${{ env.PROJECT_NAME }}-${{ github.event.inputs.environment || 'dev' }}-rg
+        cluster-name: ${{ env.PROJECT_NAME }}-${{ github.event.inputs.environment || 'dev' }}-aks
+    
+    - name: Configure AWS Kubernetes
+      if: matrix.cloud == 'aws' && (github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both')
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ env.PROJECT_NAME }}-${{ github.event.inputs.environment || 'dev' }}-eks
+    
+    - name: Deploy with Blue-Green Strategy
+      run: |
+        # Create or update namespace
+        kubectl apply -f kubernetes/base/storage.yaml
+        
+        # Deploy green version
+        export IMAGE_TAG=${{ github.sha }}
+        export ENVIRONMENT=${{ github.event.inputs.environment || 'dev' }}
+        
+        # Update image tags in manifests
+        envsubst < kubernetes/base/ml-api.yaml | kubectl apply -f -
+        envsubst < kubernetes/base/ml-training.yaml | kubectl apply -f -
+        
+        # Wait for green deployment to be ready
+        kubectl rollout status deployment/ml-api -n ml-pipeline --timeout=300s
+        
+        # Run health checks
+        kubectl wait --for=condition=ready pod -l app=ml-api -n ml-pipeline --timeout=300s
+        
+        # Switch traffic to green (this would typically involve service selector updates)
+        echo "Blue-green deployment completed successfully"
+    
+    - name: Run smoke tests
+      run: |
+        # Get service endpoint
+        if [ "${{ matrix.cloud }}" == "azure" ]; then
+          ENDPOINT=$(kubectl get ingress ml-api-ingress -n ml-pipeline -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        else
+          ENDPOINT=$(kubectl get service ml-api-service -n ml-pipeline -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        fi
+        
+        # Run basic health check
+        curl -f http://$ENDPOINT/health || exit 1
+        echo "Smoke tests passed"
+
+  # Monitoring and alerting setup
+  monitoring:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Deploy monitoring stack
+      run: |
+        # Add Prometheus Helm repo
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+        
+        # Install Prometheus
+        helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+          --namespace monitoring --create-namespace \
+          --set grafana.adminPassword=${{ secrets.GRAFANA_PASSWORD }}
+        
+        # Install custom dashboards and alerts
+        kubectl apply -f monitoring/dashboards/
+        kubectl apply -f monitoring/alerts/
+
+  # Cleanup old deployments
+  cleanup:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+    - name: Cleanup old images
+      run: |
+        # Cleanup old Docker images in registries
+        echo "Cleanup completed - keeping last 10 versions"

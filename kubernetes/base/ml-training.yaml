@@ -1,0 +1,136 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ml-training-job
+  namespace: ml-pipeline
+  labels:
+    app: ml-training
+    tier: training
+spec:
+  template:
+    metadata:
+      labels:
+        app: ml-training
+        tier: training
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: ml-training
+        image: ml-training:latest
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: DATA_PATH
+          value: "/app/data"
+        - name: MODEL_OUTPUT_PATH
+          value: "/app/models"
+        - name: MLFLOW_TRACKING_URI
+          value: "http://mlflow-service:5000"
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+            nvidia.com/gpu: 1
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: data-storage
+          mountPath: /app/data
+          readOnly: true
+        - name: model-storage
+          mountPath: /app/models
+        - name: artifacts-storage
+          mountPath: /app/artifacts
+      volumes:
+      - name: data-storage
+        persistentVolumeClaim:
+          claimName: data-storage-pvc
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: model-storage-pvc
+      - name: artifacts-storage
+        persistentVolumeClaim:
+          claimName: artifacts-storage-pvc
+      nodeSelector:
+        accelerator: nvidia-tesla-k80
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      imagePullSecrets:
+      - name: registry-secret
+  backoffLimit: 3
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ml-training-cronjob
+  namespace: ml-pipeline
+  labels:
+    app: ml-training
+    tier: training
+spec:
+  schedule: "0 2 * * 0"  # Run every Sunday at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: ml-training
+            tier: training
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: ml-training
+            image: ml-training:latest
+            env:
+            - name: ENVIRONMENT
+              value: "production"
+            - name: DATA_PATH
+              value: "/app/data"
+            - name: MODEL_OUTPUT_PATH
+              value: "/app/models"
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow-service:5000"
+            - name: TRAINING_TYPE
+              value: "scheduled"
+            resources:
+              requests:
+                memory: "2Gi"
+                cpu: "1000m"
+                nvidia.com/gpu: 1
+              limits:
+                memory: "8Gi"
+                cpu: "4000m"
+                nvidia.com/gpu: 1
+            volumeMounts:
+            - name: data-storage
+              mountPath: /app/data
+              readOnly: true
+            - name: model-storage
+              mountPath: /app/models
+            - name: artifacts-storage
+              mountPath: /app/artifacts
+          volumes:
+          - name: data-storage
+            persistentVolumeClaim:
+              claimName: data-storage-pvc
+          - name: model-storage
+            persistentVolumeClaim:
+              claimName: model-storage-pvc
+          - name: artifacts-storage
+            persistentVolumeClaim:
+              claimName: artifacts-storage-pvc
+          nodeSelector:
+            accelerator: nvidia-tesla-k80
+          tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+          imagePullSecrets:
+          - name: registry-secret
+      backoffLimit: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
