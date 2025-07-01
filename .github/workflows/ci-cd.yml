@@ -131,11 +131,11 @@ jobs:
       with:
         sarif_file: 'trivy-results.sarif'
 
-  # Build and push Docker images (skip if secrets not available)
+  # Build and push Docker images (only on manual dispatch)
   build:
     needs: [test, security]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && (secrets.AZURE_REGISTRY != '' || secrets.AWS_ACCOUNT_ID != '')
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         service: [ml-api, ml-training]
@@ -145,8 +145,15 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
     
+    - name: Check for cloud provider secrets
+      id: check-secrets
+      run: |
+        echo "azure_available=${{ secrets.AZURE_REGISTRY != '' && secrets.AZURE_CLIENT_ID != '' }}" >> $GITHUB_OUTPUT
+        echo "aws_available=${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}" >> $GITHUB_OUTPUT
+        echo "Cloud provider availability checked"
+    
     - name: Configure AWS credentials
-      if: github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both'
+      if: (github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both') && steps.check-secrets.outputs.aws_available == 'true'
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -154,19 +161,28 @@ jobs:
         aws-region: ${{ secrets.AWS_REGION }}
     
     - name: Login to Amazon ECR
-      if: github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both'
+      if: (github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both') && steps.check-secrets.outputs.aws_available == 'true'
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
     
     - name: Login to Azure Container Registry
-      if: github.event.inputs.cloud_provider == 'azure' || github.event.inputs.cloud_provider == 'both'
+      if: (github.event.inputs.cloud_provider == 'azure' || github.event.inputs.cloud_provider == 'both') && steps.check-secrets.outputs.azure_available == 'true'
       uses: azure/docker-login@v1
       with:
         login-server: ${{ env.REGISTRY_AZURE }}
         username: ${{ secrets.AZURE_CLIENT_ID }}
         password: ${{ secrets.AZURE_CLIENT_SECRET }}
     
+    - name: Skip if no cloud credentials
+      if: steps.check-secrets.outputs.azure_available == 'false' && steps.check-secrets.outputs.aws_available == 'false'
+      run: |
+        echo "⚠️ No cloud registry credentials available. Skipping Docker build and push."
+        echo "To enable cloud deployment, configure the following secrets:"
+        echo "  - For Azure: AZURE_REGISTRY, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET"
+        echo "  - For AWS: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ACCOUNT_ID"
+    
     - name: Extract metadata
+      if: steps.check-secrets.outputs.azure_available == 'true' || steps.check-secrets.outputs.aws_available == 'true'
       id: meta
       uses: docker/metadata-action@v5
       with:
@@ -180,6 +196,7 @@ jobs:
           type=raw,value=latest,enable={{is_default_branch}}
     
     - name: Build and push Docker image
+      if: steps.check-secrets.outputs.azure_available == 'true' || steps.check-secrets.outputs.aws_available == 'true'
       uses: docker/build-push-action@v5
       with:
         context: ./docker/${{ matrix.service }}
@@ -191,28 +208,44 @@ jobs:
         cache-to: type=gha,mode=max
         platforms: linux/amd64,linux/arm64
 
-  # Infrastructure deployment (skip if secrets not available)
+  # Infrastructure deployment (only on main branch or manual dispatch)
   infrastructure:
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && (secrets.AZURE_CREDENTIALS != '' || secrets.AWS_ACCESS_KEY_ID != '')
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     environment: ${{ github.event.inputs.environment || 'dev' }}
     steps:
     - uses: actions/checkout@v4
     
+    - name: Check for infrastructure secrets
+      id: check-infra-secrets
+      run: |
+        echo "azure_available=${{ secrets.AZURE_CREDENTIALS != '' }}" >> $GITHUB_OUTPUT
+        echo "aws_available=${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}" >> $GITHUB_OUTPUT
+        echo "Infrastructure secrets availability checked"
+    
+    - name: Skip if no infrastructure credentials
+      if: steps.check-infra-secrets.outputs.azure_available == 'false' && steps.check-infra-secrets.outputs.aws_available == 'false'
+      run: |
+        echo "⚠️ No infrastructure credentials available. Skipping Terraform deployment."
+        echo "To enable infrastructure deployment, configure the following secrets:"
+        echo "  - For Azure: AZURE_CREDENTIALS"
+        echo "  - For AWS: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY"
+    
     - name: Setup Terraform
+      if: steps.check-infra-secrets.outputs.azure_available == 'true' || steps.check-infra-secrets.outputs.aws_available == 'true'
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.6.0
     
     - name: Configure Azure credentials
-      if: github.event.inputs.cloud_provider == 'azure' || github.event.inputs.cloud_provider == 'both'
+      if: (github.event.inputs.cloud_provider == 'azure' || github.event.inputs.cloud_provider == 'both') && steps.check-infra-secrets.outputs.azure_available == 'true'
       uses: azure/login@v1
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
     
     - name: Configure AWS credentials
-      if: github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both'
+      if: (github.event.inputs.cloud_provider == 'aws' || github.event.inputs.cloud_provider == 'both') && steps.check-infra-secrets.outputs.aws_available == 'true'
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
