@@ -194,7 +194,8 @@ jobs:
     - name: Build Docker image for validation
       run: |
         echo "🐳 Building ${{ matrix.service }} for validation..."
-        docker build -t ${{ matrix.service }}:test ./docker/${{ matrix.service }}/
+        # Use project root as build context and specify dockerfile path
+        docker build -f ./docker/${{ matrix.service }}/Dockerfile -t ${{ matrix.service }}:test .
         echo "✅ ${{ matrix.service }} builds successfully"
     
     - name: Test Docker image

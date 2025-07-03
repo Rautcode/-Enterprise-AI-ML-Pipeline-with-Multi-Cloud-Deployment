@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY requirements.txt .
+COPY docker/ml-training/requirements.txt .
 
 # Create virtual environment and install dependencies
 RUN python -m venv /opt/venv
@@ -43,8 +43,10 @@ COPY --from=builder /opt/venv /opt/venv
 # Set working directory
 WORKDIR /app
 
-# Copy application code
-COPY --chown=mluser:mluser . .
+# Copy application code from the correct relative path
+# Note: Build context should be project root, not docker/ml-training/
+COPY --chown=mluser:mluser src/training/ /app/
+COPY --chown=mluser:mluser src/__init__.py /app/
 
 # Create necessary directories
 RUN mkdir -p /app/data /app/models /app/logs /app/artifacts && \

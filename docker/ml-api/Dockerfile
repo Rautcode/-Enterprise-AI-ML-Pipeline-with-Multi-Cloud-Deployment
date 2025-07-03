@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
-COPY requirements.txt .
+COPY docker/ml-api/requirements.txt .
 
 # Create virtual environment and install dependencies
 RUN python -m venv /opt/venv
@@ -45,9 +45,10 @@ WORKDIR /app
 # Set Python path
 ENV PYTHONPATH=/app
 
-# Copy application code
-COPY ../../src/ml-api/ /app/
-COPY ../../src/__init__.py /app/
+# Copy application code from the correct relative path
+# Note: Build context should be project root, not docker/ml-api/
+COPY src/ml-api/ /app/
+COPY src/__init__.py /app/
 
 # Create necessary directories
 RUN mkdir -p /app/models /app/logs && \
