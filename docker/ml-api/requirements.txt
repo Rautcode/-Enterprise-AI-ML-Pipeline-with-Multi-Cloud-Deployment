@@ -32,7 +32,7 @@ aiofiles==23.2.1
 python-multipart==0.0.6
 
 # Security
-cryptography==41.0.8
+cryptography==45.0.5
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 
